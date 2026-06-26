@@ -1,5 +1,5 @@
 # GitHub Tool Launcher
-# APP_VERSION: v1.7.4
+# APP_VERSION: v1.8.0
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ import tkinter.font as tkfont
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
 APP_NAME = "GitHub Tool Launcher"
-APP_VERSION = "v1.7.4"
+APP_VERSION = "v1.8.0"
 
 RUN_METHODS = [
     ("auto", "自動"),
@@ -1596,6 +1596,14 @@ class GitHubToolLauncher:
         self.config["font_size"] = size
         self.apply_font_size(save=True)
 
+    def build_label_submenu(self, parent_menu: tk.Menu) -> tk.Menu:
+        label_menu = tk.Menu(parent_menu, tearoff=False)
+        for digit in "123456789":
+            label_menu.add_command(label=digit, command=lambda d=digit: self.assign_label_to_selected(d))
+        label_menu.add_separator()
+        label_menu.add_command(label="解除", command=lambda: self.assign_label_to_selected("0"))
+        return label_menu
+
     def _build_menu(self) -> None:
         menubar = tk.Menu(self.root)
 
@@ -1605,12 +1613,16 @@ class GitHubToolLauncher:
 
         action_menu = tk.Menu(menubar, tearoff=False)
         action_menu.add_command(label="実行", command=self.run_selected_tool, accelerator="Enter")
+        action_menu.add_command(label="コマンドプロンプト", command=self.open_selected_command_prompt)
+        action_menu.add_separator()
         action_menu.add_command(label="実行環境", command=self.open_selected_repository_folder)
         action_menu.add_command(label="開発環境", command=self.open_selected_development_folder)
         action_menu.add_command(label="GitHub", command=self.open_selected_github_page)
         action_menu.add_command(label="README", command=self.open_selected_readme)
         action_menu.add_separator()
-        action_menu.add_command(label="最新バージョン", command=self.update_selected_repository, accelerator="F5")
+        action_menu.add_cascade(label="ラベル", menu=self.build_label_submenu(action_menu))
+        action_menu.add_separator()
+        action_menu.add_command(label="最新バージョン取得", command=self.update_selected_repository, accelerator="F5")
         action_menu.add_command(label="全取得", command=self.update_all_repositories)
         menubar.add_cascade(label="操作", menu=action_menu)
 
@@ -1696,21 +1708,25 @@ class GitHubToolLauncher:
         self.tree.configure(yscrollcommand=yscroll.set)
         self.configure_label_tags()
 
-        button_frame = ttk.Frame(self.root, padding=(12, 2, 12, 8))
-        button_frame.grid(row=2, column=0, sticky="ew")
-        ttk.Button(button_frame, text="実行", command=self.run_selected_tool).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="実行環境", command=self.open_selected_repository_folder).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="開発環境", command=self.open_selected_development_folder).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="GitHub", command=self.open_selected_github_page).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="README", command=self.open_selected_readme).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="最新バージョン", command=self.update_selected_repository).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="全取得", command=self.update_all_repositories).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="候補登録", command=self.open_repository_import).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="ツール管理", command=self.open_tool_manager).pack(side="right")
+        self.tree.bind("<Button-3>", self.show_tree_context_menu)
+        self.tree.bind("<Control-Button-1>", self.show_tree_context_menu)
+
+        self.tree_context_menu = tk.Menu(self.root, tearoff=False)
+        self.tree_context_menu.add_command(label="実行", command=self.run_selected_tool)
+        self.tree_context_menu.add_command(label="コマンドプロンプト", command=self.open_selected_command_prompt)
+        self.tree_context_menu.add_separator()
+        self.tree_context_menu.add_command(label="実行環境", command=self.open_selected_repository_folder)
+        self.tree_context_menu.add_command(label="開発環境", command=self.open_selected_development_folder)
+        self.tree_context_menu.add_command(label="GitHub", command=self.open_selected_github_page)
+        self.tree_context_menu.add_command(label="README", command=self.open_selected_readme)
+        self.tree_context_menu.add_separator()
+        self.tree_context_menu.add_cascade(label="ラベル", menu=self.build_label_submenu(self.tree_context_menu))
+        self.tree_context_menu.add_separator()
+        self.tree_context_menu.add_command(label="最新バージョン取得", command=self.update_selected_repository)
 
         self.status_var = tk.StringVar()
         status = ttk.Label(self.root, textvariable=self.status_var, anchor="w", relief="sunken", padding=(8, 3))
-        status.grid(row=3, column=0, sticky="ew")
+        status.grid(row=2, column=0, sticky="ew")
 
     def restore_or_center_geometry(self) -> None:
         geometry = str(self.config.get("window_geometry", ""))
@@ -1819,6 +1835,19 @@ class GitHubToolLauncher:
         method = RUN_METHOD_LABELS.get(tool.get("run_method", "auto"), "自動")
         state = self.get_tool_state_label(tool)
         self.set_status(f"選択中: {tool['title']} / {tool['repository']} / {method} / {state}")
+
+    def show_tree_context_menu(self, event: tk.Event) -> str:
+        row_id = self.tree.identify_row(event.y)
+        if not row_id:
+            return "break"
+        self.tree.selection_set(row_id)
+        self.tree.focus(row_id)
+        self.update_selection_status()
+        try:
+            self.tree_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.tree_context_menu.grab_release()
+        return "break"
 
     def get_selected_tool_index(self) -> int | None:
         if not hasattr(self, "tree"):
@@ -2056,6 +2085,29 @@ class GitHubToolLauncher:
         else:
             open_in_file_manager(path)
 
+    def open_selected_command_prompt(self) -> None:
+        tool = self.require_tool()
+        if tool is None or not self.validate_tool_paths(tool):
+            return
+        path = self.repository_path_for(tool)
+        if not path.exists():
+            messagebox.showwarning("フォルダなし", f"実行環境フォルダが見つかりません。\n\n{path}", parent=self.root)
+            return
+        try:
+            if is_windows():
+                kwargs: dict[str, Any] = {}
+                creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+                if creationflags:
+                    kwargs["creationflags"] = creationflags
+                subprocess.Popen(["cmd.exe"], cwd=str(path), **kwargs)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-a", "Terminal", str(path)])
+            else:
+                subprocess.Popen(["x-terminal-emulator", "--working-directory", str(path)])
+            self.set_status(f"コマンドプロンプトを開きました: {tool['repository']}")
+        except Exception as exc:
+            messagebox.showerror("起動失敗", f"コマンドプロンプトを開けませんでした。\n\n{exc}", parent=self.root)
+
     def open_selected_development_folder(self) -> None:
         tool = self.require_tool()
         if tool is None or not self.validate_tool_paths(tool):
@@ -2110,7 +2162,7 @@ class GitHubToolLauncher:
         if not repo_dir.exists():
             messagebox.showwarning(
                 "未取得",
-                f"実行環境リポジトリがありません。\n先に [最新バージョンを取得] を実行してください。\n\n{repo_dir}",
+                f"実行環境リポジトリがありません。\n先に [最新バージョン取得] を実行してください。\n\n{repo_dir}",
                 parent=self.root,
             )
             return
