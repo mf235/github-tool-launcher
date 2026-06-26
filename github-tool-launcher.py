@@ -1,5 +1,5 @@
 # GitHub Tool Launcher
-# APP_VERSION: v1.7.1
+# APP_VERSION: v1.7.4
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ import tkinter.font as tkfont
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
 APP_NAME = "GitHub Tool Launcher"
-APP_VERSION = "v1.7.1"
+APP_VERSION = "v1.7.4"
 
 RUN_METHODS = [
     ("auto", "自動"),
@@ -401,6 +401,42 @@ def windows_minimized_console_kwargs() -> dict[str, Any]:
     except Exception:
         pass
     return kwargs
+
+
+def windows_hidden_launcher_kwargs() -> dict[str, Any]:
+    """Hide only the short-lived launcher process.
+
+    Do not pass STARTF_USESHOWWINDOW/SW_HIDE here.  Those values can leak into
+    a Python GUI process and hide the actual tool window.
+    """
+    if not is_windows():
+        return {}
+    kwargs: dict[str, Any] = {}
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if creationflags:
+        kwargs["creationflags"] = creationflags
+    return kwargs
+
+
+def windows_executable(name: str) -> str:
+    found = shutil.which(name)
+    return found or name
+
+
+def launch_windows_minimized_console(command_args: list[str], cwd: Path) -> None:
+    """Run command in a minimized cmd window without minimizing the child GUI.
+
+    Directly passing SW_MINIMIZE to python.exe can make Tk/PySide windows start
+    minimized.  This launches a minimized cmd wrapper instead, then runs the
+    target command normally inside it.
+    """
+    inner = subprocess.list2cmdline([str(arg) for arg in command_args])
+    start_command = f'start "" /min cmd.exe /c {inner}'
+    subprocess.Popen(
+        ["cmd.exe", "/c", start_command],
+        cwd=str(cwd),
+        **windows_hidden_launcher_kwargs(),
+    )
 
 
 def migrate_old_repository_dir() -> None:
@@ -2113,10 +2149,11 @@ class GitHubToolLauncher:
         rel_script = os.path.normpath(normalize_script_path_text(tool["script"]).replace("/", os.sep))
         method = tool.get("run_method", "auto")
         if method == "auto":
-            if ext == ".pyw":
+            if ext in {".py", ".pyw"}:
+                # Launcher targets are mostly GUI tools.  Use pythonw by default so
+                # a console window is not opened.  Console tools can explicitly use
+                # the "python" run method.
                 method = "pythonw"
-            elif ext == ".py":
-                method = "python"
             elif ext in {".bat", ".cmd"}:
                 method = "bat"
             elif ext == ".exe":
@@ -2129,18 +2166,22 @@ class GitHubToolLauncher:
             if not command:
                 raise RuntimeError("任意コマンドが空です。")
             if is_windows():
-                subprocess.Popen(["cmd.exe", "/c", command], cwd=str(repo_dir), **windows_minimized_console_kwargs())
+                launch_windows_minimized_console(["cmd.exe", "/c", command], repo_dir)
             else:
                 subprocess.Popen(command, cwd=str(repo_dir), shell=True)
             return
 
         if is_windows():
             if method == "python":
-                subprocess.Popen(["python", rel_script], cwd=str(repo_dir), **windows_minimized_console_kwargs())
+                # Keep the console minimized without passing SW_MINIMIZE to python.exe,
+                # because that can make a GUI tool's main window start minimized.
+                launch_windows_minimized_console([windows_executable("python"), rel_script], repo_dir)
             elif method == "pythonw":
-                subprocess.Popen(["pythonw", rel_script], cwd=str(repo_dir), **windows_no_console_kwargs())
+                # pythonw.exe already avoids the console window.  Do not pass
+                # STARTUPINFO/SW_HIDE, because that can hide the GUI tool itself.
+                subprocess.Popen([windows_executable("pythonw"), rel_script], cwd=str(repo_dir))
             elif method == "bat":
-                subprocess.Popen(["cmd.exe", "/c", rel_script], cwd=str(repo_dir), **windows_minimized_console_kwargs())
+                launch_windows_minimized_console(["cmd.exe", "/c", rel_script], repo_dir)
             elif method == "exe":
                 subprocess.Popen([str(script_path)], cwd=str(repo_dir))
             else:

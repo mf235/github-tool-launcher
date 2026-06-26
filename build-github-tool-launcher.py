@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 
 APP_NAME = "github-tool-launcher"
-APP_VERSION = "v1.7.1"
+APP_VERSION = "v1.7.4"
 SCRIPT_NAME = "github-tool-launcher.py"
 ICON_PATH = Path("resources/icons/app.ico")
 WINDOW_ICON_PATH = Path("resources/icons/window.png")
