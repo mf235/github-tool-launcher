@@ -1,5 +1,5 @@
 # GitHub Tool Launcher
-# APP_VERSION: v1.9.3
+# APP_VERSION: v1.11.2
 
 from __future__ import annotations
 
@@ -13,10 +13,12 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.error
 import urllib.request
 import webbrowser
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +26,14 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except Exception:
+    DND_FILES = None
+    TkinterDnD = None
+
 APP_NAME = "GitHub Tool Launcher"
-APP_VERSION = "v1.9.3"
+APP_VERSION = "v1.11.2"
 
 RUN_METHODS = [
     ("auto", "自動"),
@@ -613,6 +621,165 @@ def runtime_marker_text(tool: dict[str, str], repo_dir: Path, development_dir: P
         f"開発環境: {development_dir}\n\n"
         "編集する場合は、開発環境側のフォルダを開いてください。\n"
     )
+
+
+
+def parse_dropped_file_list(raw: str, widget: tk.Misc | None = None) -> list[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    if widget is not None:
+        try:
+            return [str(x) for x in widget.tk.splitlist(text)]
+        except Exception:
+            pass
+    # Fallback for simple TkDND file list strings: {C:/a b.zip} C:/c.zip
+    result: list[str] = []
+    current = ""
+    in_brace = False
+    for ch in text:
+        if ch == "{" and not in_brace:
+            in_brace = True
+            current = ""
+        elif ch == "}" and in_brace:
+            in_brace = False
+            if current:
+                result.append(current)
+            current = ""
+        elif ch.isspace() and not in_brace:
+            if current:
+                result.append(current)
+                current = ""
+        else:
+            current += ch
+    if current:
+        result.append(current)
+    return result
+
+
+
+def try_enable_tkdnd(widget: tk.Widget, callback) -> bool:
+    """Enable external file D&D only through tkdnd/tkinterdnd2.
+
+    Do not install custom Win32 WNDPROC hooks here.  They are fragile with
+    Tkinter Toplevel destruction and can crash on Windows when a dialog closes.
+    If tkdnd is unavailable, the dialog still works through the file select
+    button.
+    """
+    # Preferred path when tkinterdnd2 is installed and the root was created with
+    # TkinterDnD.Tk.  This keeps D&D management inside tkdnd instead of using
+    # hand-written Win32 callbacks.
+    try:
+        if DND_FILES is not None and hasattr(widget, "drop_target_register") and hasattr(widget, "dnd_bind"):
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", lambda event: callback(parse_dropped_file_list(getattr(event, "data", ""), widget)))
+            return True
+    except Exception:
+        pass
+
+    # Fallback for environments where the Tcl tkdnd package is already
+    # available.  This is still tkdnd-managed and does not touch HWND/WNDPROC.
+    try:
+        widget.tk.call("package", "require", "tkdnd")
+        widget.tk.call("tkdnd::drop_target", "register", widget._w, "DND_Files")
+        widget.bind("<<Drop>>", lambda event: callback(parse_dropped_file_list(getattr(event, "data", ""), widget)), add="+")
+        return True
+    except Exception:
+        return False
+
+def normalize_zip_member_name(name: str) -> str:
+    text = str(name or "").replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    return text
+
+
+def validate_zip_member_name(name: str) -> str | None:
+    normalized = normalize_zip_member_name(name)
+    if not normalized:
+        return "空のパスが含まれています。"
+    if has_control_char(normalized):
+        return f"制御文字を含むパスがあります: {name}"
+    if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
+        return f"絶対パスは展開できません: {name}"
+    parts = [part for part in normalized.split("/") if part]
+    if any(part == ".." for part in parts):
+        return f".. を含むパスは展開できません: {name}"
+    if not parts:
+        return f"不正なパスです: {name}"
+    return None
+
+
+def zip_member_file_names(zf: zipfile.ZipFile) -> list[str]:
+    names: list[str] = []
+    for info in zf.infolist():
+        normalized = normalize_zip_member_name(info.filename)
+        if not normalized or normalized.endswith("/") or info.is_dir():
+            continue
+        names.append(normalized)
+    return names
+
+
+def single_zip_root(file_names: list[str]) -> str:
+    roots = {name.split("/", 1)[0] for name in file_names if "/" in name}
+    direct_files = [name for name in file_names if "/" not in name]
+    if direct_files or len(roots) != 1:
+        return ""
+    return next(iter(roots))
+
+
+def safe_extract_zip_to_temp(zip_path: Path, temp_root: Path, strip_root: str = "") -> list[Path]:
+    written: list[Path] = []
+    root_resolved = temp_root.resolve(strict=False)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        bad = zf.testzip()
+        if bad:
+            raise ValueError(f"ZIPが壊れている可能性があります: {bad}")
+        for info in zf.infolist():
+            name = normalize_zip_member_name(info.filename)
+            error = validate_zip_member_name(name)
+            if error:
+                raise ValueError(error)
+            if info.is_dir() or name.endswith("/"):
+                continue
+            rel = name
+            if strip_root:
+                prefix = strip_root.rstrip("/") + "/"
+                if rel == strip_root.rstrip("/"):
+                    continue
+                if rel.startswith(prefix):
+                    rel = rel[len(prefix):]
+            if not rel:
+                continue
+            dest = (temp_root / Path(*rel.split("/"))).resolve(strict=False)
+            try:
+                dest.relative_to(root_resolved)
+            except ValueError as exc:
+                raise ValueError(f"展開先フォルダ外へ出るパスがあります: {name}") from exc
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info, "r") as src, dest.open("wb") as out:
+                shutil.copyfileobj(src, out)
+            written.append(dest)
+    return written
+
+
+def copy_tree_overwrite_without_delete(source_dir: Path, dest_dir: Path) -> list[Path]:
+    copied: list[Path] = []
+    source_root = source_dir.resolve(strict=False)
+    dest_root = dest_dir.resolve(strict=False)
+    for src in source_dir.rglob("*"):
+        if not src.is_file():
+            continue
+        rel = src.resolve(strict=False).relative_to(source_root)
+        dest = (dest_dir / rel).resolve(strict=False)
+        try:
+            dest.relative_to(dest_root)
+        except ValueError as exc:
+            raise ValueError(f"コピー先フォルダ外へ出るパスがあります: {rel}") from exc
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        copied.append(dest)
+    return copied
 
 
 class CommandLogDialog(tk.Toplevel):
@@ -1332,6 +1499,471 @@ class RepositoryImportDialog(tk.Toplevel):
         threading.Thread(target=worker, daemon=True).start()
 
 
+
+class ZipRootChoiceDialog(tk.Toplevel):
+    def __init__(self, parent: tk.Misc, zip_root: str, repo_name: str) -> None:
+        super().__init__(parent)
+        self.withdraw()
+        self.result: str | None = None
+        self.title("ZIPルート確認")
+        self.resizable(False, False)
+        frame = ttk.Frame(self, padding=16)
+        frame.grid(row=0, column=0, sticky="nsew")
+        message = (
+            "ZIPのルートフォルダ名がリポジトリ名と一致しません。\n\n"
+            f"ZIPルート: {zip_root}\n"
+            f"リポジトリ: {repo_name}\n\n"
+            "展開方法を選んでください。"
+        )
+        ttk.Label(frame, text=message, justify="left").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 14))
+        ttk.Button(frame, text="そのまま展開", command=lambda: self.finish("keep")).grid(row=1, column=0, padx=(0, 8))
+        ttk.Button(frame, text="中身だけ展開", command=lambda: self.finish("strip")).grid(row=1, column=1, padx=8)
+        ttk.Button(frame, text="キャンセル", command=lambda: self.finish(None)).grid(row=1, column=2, padx=(8, 0))
+        self.protocol("WM_DELETE_WINDOW", lambda: self.finish(None))
+        self.bind("<Escape>", close_event_break(lambda: self.finish(None)))
+        show_toplevel_on_parent(self, parent, modal=True)
+        self.wait_window(self)
+
+    def finish(self, result: str | None) -> None:
+        self.result = result
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
+
+
+class FixApplyDialog(tk.Toplevel):
+    def __init__(self, app: "GitHubToolLauncher", tool: dict[str, str]) -> None:
+        super().__init__(app.root)
+        self.withdraw()
+        self.app = app
+        self.tool = tool
+        self.input_paths: list[Path] = []
+        self.input_kind = ""  # "zip" or "files"
+        self.initial_summary = "Update"
+        self.done = False
+        self.running = False
+        self.drop_targets: list[Any] = []
+        self._closing = False
+        self.title("修正反映")
+        self.resizable(True, True)
+
+        self.summary_var = tk.StringVar(value=self.initial_summary)
+        self.dnd_enabled = False
+        self.input_var = tk.StringVar(value="ファイル/ZIPをここにD&D、または選択してください。")
+
+        frame = ttk.Frame(self, padding=14)
+        frame.grid(row=0, column=0, sticky="nsew")
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(4, weight=1, minsize=130)
+
+        repo_text = f"対象: {tool.get('title', '')} / {self.app.development_path_for(tool)}"
+        ttk.Label(frame, text=repo_text).grid(row=0, column=0, sticky="w", pady=(0, 8))
+
+        self.drop_label = tk.Label(
+            frame,
+            textvariable=self.input_var,
+            relief="groove",
+            borderwidth=2,
+            padx=16,
+            pady=20,
+            background="#f7f7f7",
+            foreground="#333333",
+            anchor="center",
+            justify="center",
+        )
+        self.drop_label.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        self.drop_label.bind("<Button-1>", lambda _e: self.select_input_files())
+
+        input_buttons = ttk.Frame(frame)
+        input_buttons.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        ttk.Button(input_buttons, text="ファイル/ZIPを選択", command=self.select_input_files).pack(side="left")
+        ttk.Label(input_buttons, text="※指定されていない既存ファイルは削除しません。", foreground="#666666").pack(side="left", padx=(10, 0))
+
+        form = ttk.Frame(frame)
+        form.grid(row=3, column=0, sticky="ew")
+        form.columnconfigure(1, weight=1)
+        ttk.Label(form, text="Summary").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=5)
+        self.summary_entry = ttk.Entry(form, textvariable=self.summary_var)
+        self.summary_entry.grid(row=0, column=1, sticky="ew", pady=5)
+        ttk.Label(form, text="Description").grid(row=1, column=0, sticky="nw", padx=(0, 8), pady=5)
+        self.description_text = tk.Text(form, height=5, wrap="word", undo=True)
+        self.description_text.grid(row=1, column=1, sticky="nsew", pady=5)
+
+        log_frame = ttk.LabelFrame(frame, text="ログ")
+        log_frame.grid(row=4, column=0, sticky="nsew", pady=(10, 10))
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
+        self.log_text = tk.Text(log_frame, height=6, wrap="word", state="disabled")
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+        log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        log_scroll.grid(row=0, column=1, sticky="ns")
+        self.log_text.configure(yscrollcommand=log_scroll.set)
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=5, column=0, sticky="ew")
+        self.status_var = tk.StringVar(value="")
+        ttk.Label(buttons, textvariable=self.status_var, foreground="#b06000").pack(side="left")
+        self.close_button = ttk.Button(buttons, text="キャンセル", command=self.close)
+        self.close_button.pack(side="right")
+        self.commit_button = ttk.Button(buttons, text="Commit & Push", command=self.commit_and_push)
+        self.commit_button.pack(side="right", padx=(0, 8))
+
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.bind("<Escape>", close_event_break(self.close))
+        self.summary_var.trace_add("write", lambda *_args: self.update_dirty_status())
+        self.description_text.bind("<<Modified>>", self.on_description_modified)
+        self.install_drop_targets()
+        show_toplevel_on_parent(self, app.root, width=760, height=660, modal=False)
+        self.summary_entry.focus_set()
+        self.update_dirty_status()
+
+    def install_drop_targets(self) -> None:
+        self.dnd_enabled = False
+        for widget in (self, self.drop_label):
+            if try_enable_tkdnd(widget, self.on_files_dropped):
+                self.dnd_enabled = True
+        if not self.dnd_enabled:
+            self.input_var.set("ファイル/ZIPを選択してください。")
+            self.append_log("D&Dは無効です。tkinterdnd2 が使える環境ではD&Dできます。\n")
+
+    def on_description_modified(self, _event: tk.Event | None = None) -> None:
+        try:
+            self.description_text.edit_modified(False)
+        except tk.TclError:
+            pass
+        self.update_dirty_status()
+
+    def update_dirty_status(self) -> None:
+        if self.done:
+            self.status_var.set("")
+            return
+        dirty = bool(self.input_paths) or self.summary_var.get().strip() != self.initial_summary or bool(self.description_text.get("1.0", "end-1c").strip())
+        self.status_var.set("未実行の入力あり" if dirty else "")
+
+    def select_input_files(self) -> None:
+        filenames = filedialog.askopenfilenames(
+            parent=self,
+            title="反映するファイル/ZIPを選択",
+            filetypes=[("Supported files", "*.zip *.*"), ("ZIP files", "*.zip"), ("All files", "*.*")],
+        )
+        if filenames:
+            self.set_input_paths([Path(name) for name in filenames])
+
+    def on_files_dropped(self, paths: list[str]) -> None:
+        files = [Path(path) for path in paths if str(path).strip()]
+        if files:
+            self.set_input_paths(files)
+
+    def set_input_paths(self, paths: list[Path]) -> None:
+        normalized = [path.expanduser() for path in paths]
+        if not normalized:
+            return
+        missing = [path for path in normalized if not path.exists()]
+        if missing:
+            messagebox.showwarning("ファイル選択", "ファイルが見つかりません。\n\n" + "\n".join(str(path) for path in missing), parent=self)
+            return
+        folders = [path for path in normalized if path.is_dir()]
+        if folders:
+            messagebox.showwarning("ファイル選択", "フォルダは指定できません。ファイルまたはZIPを指定してください。\n\n" + "\n".join(str(path) for path in folders), parent=self)
+            return
+        zip_files = [path for path in normalized if path.suffix.lower() == ".zip"]
+        normal_files = [path for path in normalized if path.suffix.lower() != ".zip"]
+        if zip_files and normal_files:
+            messagebox.showwarning("ファイル選択", "zipファイルと通常ファイルは同時に反映できません。", parent=self)
+            return
+        if len(zip_files) > 1:
+            messagebox.showwarning("ZIP選択", "ZIPファイルは1つだけ指定してください。", parent=self)
+            return
+        if zip_files:
+            self.input_paths = [zip_files[0]]
+            self.input_kind = "zip"
+            self.input_var.set(str(zip_files[0]))
+            self.append_log(f"ZIP: {zip_files[0]}\n")
+        else:
+            self.input_paths = normal_files
+            self.input_kind = "files"
+            names = [path.name for path in normal_files]
+            if len(names) <= 6:
+                display = "選択中:\n" + "\n".join(f"・{name}" for name in names)
+            else:
+                head = "\n".join(f"・{name}" for name in names[:6])
+                display = f"選択中:\n{head}\n... 他 {len(names) - 6} ファイル"
+            self.input_var.set(display)
+            self.append_log("通常ファイル:\n" + "".join(f"  {path}\n" for path in normal_files))
+        self.update_dirty_status()
+
+    def append_log(self, message: str) -> None:
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", message)
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
+        self.update_idletasks()
+
+    def get_summary_description(self) -> tuple[str, str]:
+        return self.summary_var.get().strip(), self.description_text.get("1.0", "end-1c").strip()
+
+    def validate_zip_and_root(self, repo_name: str) -> tuple[str, int] | None:
+        zip_path = self.input_paths[0]
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                bad = zf.testzip()
+                if bad:
+                    messagebox.showerror("ZIPエラー", f"ZIPが壊れている可能性があります。\n\n{bad}", parent=self)
+                    return None
+                file_names = zip_member_file_names(zf)
+                if not file_names:
+                    messagebox.showerror("ZIPエラー", "ZIP内に反映できるファイルがありません。", parent=self)
+                    return None
+                for info in zf.infolist():
+                    error = validate_zip_member_name(info.filename)
+                    if error:
+                        messagebox.showerror("ZIPエラー", error, parent=self)
+                        return None
+        except zipfile.BadZipFile as exc:
+            messagebox.showerror("ZIPエラー", f"ZIPファイルを開けません。\n\n{exc}", parent=self)
+            return None
+        except OSError as exc:
+            messagebox.showerror("ZIPエラー", f"ZIPファイルを読めません。\n\n{exc}", parent=self)
+            return None
+        root = single_zip_root(file_names)
+        if not root:
+            return "", len(file_names)
+        if root.lower() == repo_name.lower():
+            return root, len(file_names)
+        choice = ZipRootChoiceDialog(self, root, repo_name).result
+        if choice is None:
+            return None
+        return (root if choice == "strip" else ""), len(file_names)
+
+    def validate_normal_files(self) -> list[Path] | None:
+        safe_files: list[Path] = []
+        seen: set[str] = set()
+        for path in self.input_paths:
+            try:
+                if not path.exists() or not path.is_file():
+                    messagebox.showerror("ファイルエラー", f"反映するファイルが見つかりません。\n\n{path}", parent=self)
+                    return None
+            except OSError as exc:
+                messagebox.showerror("ファイルエラー", f"ファイルを確認できません。\n\n{path}\n\n{exc}", parent=self)
+                return None
+            name = path.name
+            if not name or has_control_char(name) or name in (".", ".."):
+                messagebox.showerror("ファイルエラー", f"不正なファイル名です。\n\n{path}", parent=self)
+                return None
+            key = name.lower() if is_windows() else name
+            if key in seen:
+                messagebox.showerror("ファイルエラー", f"同じファイル名が複数指定されています。\n\n{name}", parent=self)
+                return None
+            seen.add(key)
+            safe_files.append(path)
+        if not safe_files:
+            messagebox.showerror("ファイルエラー", "反映するファイルがありません。", parent=self)
+            return None
+        return safe_files
+
+    def get_git_path(self) -> str | None:
+        git_path = shutil.which("git")
+        if not git_path:
+            messagebox.showwarning("Gitなし", "git コマンドが見つかりません。GitをインストールするかPATHを確認してください。", parent=self)
+            return None
+        return git_path
+
+    def run_git_capture(self, args: list[str], repo_dir: Path) -> tuple[int, str]:
+        encoding = locale.getpreferredencoding(False) or "utf-8"
+        process = subprocess.run(
+            args,
+            cwd=str(repo_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding=encoding,
+            errors="replace",
+            **windows_no_console_kwargs(),
+        )
+        return process.returncode, process.stdout or ""
+
+    def commit_and_push(self) -> None:
+        if self.running:
+            return
+        tool = self.tool
+        if not self.input_paths:
+            messagebox.showwarning("ファイル未指定", "反映するファイルまたはZIPを指定してください。", parent=self)
+            return
+        summary, description = self.get_summary_description()
+        if not summary:
+            messagebox.showwarning("Summary未入力", "Summaryを入力してください。", parent=self)
+            return
+        if not self.app.validate_tool_paths(tool, parent=self):
+            return
+        dev_dir = self.app.development_path_for(tool)
+        if not dev_dir.exists() or not dev_dir.is_dir():
+            messagebox.showwarning("開発環境なし", f"開発環境フォルダが見つかりません。\n\n{dev_dir}", parent=self)
+            return
+        if not (dev_dir / ".git").exists():
+            messagebox.showwarning("Gitリポジトリなし", f"開発環境フォルダに .git がありません。\n\n{dev_dir}", parent=self)
+            return
+        git_path = self.get_git_path()
+        if git_path is None:
+            return
+        strip_root = ""
+        file_count = 0
+        normal_files: list[Path] = []
+        if self.input_kind == "zip":
+            plan = self.validate_zip_and_root(tool.get("repository", ""))
+            if plan is None:
+                return
+            strip_root, file_count = plan
+        elif self.input_kind == "files":
+            checked = self.validate_normal_files()
+            if checked is None:
+                return
+            normal_files = checked
+            file_count = len(normal_files)
+        else:
+            messagebox.showwarning("ファイル未指定", "反映するファイルまたはZIPを指定してください。", parent=self)
+            return
+        try:
+            code, status = self.run_git_capture([git_path, "status", "--porcelain"], dev_dir)
+        except Exception as exc:
+            messagebox.showerror("Gitエラー", f"git status を実行できません。\n\n{exc}", parent=self)
+            return
+        if code != 0:
+            messagebox.showerror("Gitエラー", f"git status に失敗しました。\n\n{status}", parent=self)
+            return
+        if status.strip():
+            if not messagebox.askyesno(
+                "未コミット変更あり",
+                "開発環境に未コミットの変更があります。\n"
+                "このまま反映すると、既存の変更も一緒にcommitされる可能性があります。\n\n"
+                "続行しますか？",
+                parent=self,
+            ):
+                return
+        self.running = True
+        self.commit_button.configure(state="disabled")
+        self.close_button.configure(text="閉じる", state="disabled")
+        self.append_log(f"対象リポジトリ: {dev_dir}\n")
+        if self.input_kind == "zip":
+            self.append_log(f"ZIP内ファイル数: {file_count}\n")
+            if strip_root:
+                self.append_log(f"ZIPルートを除外: {strip_root}\n")
+            else:
+                self.append_log("ZIPをそのまま反映します。\n")
+        else:
+            self.append_log(f"通常ファイル数: {file_count}\n")
+            self.append_log("通常ファイルは開発環境リポジトリ直下へ反映します。\n")
+        self.append_log("※指定されていない既存ファイルは削除しません。\n\n")
+        input_kind = self.input_kind
+        zip_path = self.input_paths[0] if self.input_kind == "zip" else None
+        files_to_copy = list(normal_files)
+
+        def worker() -> None:
+            try:
+                self.apply_and_git(git_path, dev_dir, input_kind, zip_path, files_to_copy, strip_root, summary, description)
+            except Exception as exc:
+                self.after(0, self.on_worker_error, exc)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def apply_and_git(self, git_path: str, dev_dir: Path, input_kind: str, zip_path: Path | None, files_to_copy: list[Path], strip_root: str, summary: str, description: str) -> None:
+        if input_kind == "zip":
+            if zip_path is None:
+                raise RuntimeError("ZIPファイルが指定されていません。")
+            with tempfile.TemporaryDirectory(prefix="github_tool_launcher_fix_") as temp_name:
+                temp_dir = Path(temp_name)
+                self.after(0, self.append_log, "ZIPを展開中...\n")
+                extracted = safe_extract_zip_to_temp(zip_path, temp_dir, strip_root)
+                if not extracted:
+                    self.after(0, self.append_log, "反映できるファイルがありません。\n")
+                    self.after(0, self.on_worker_done, False)
+                    return
+                self.after(0, self.append_log, "開発環境へコピー中...\n")
+                copied = copy_tree_overwrite_without_delete(temp_dir, dev_dir)
+                self.after(0, self.append_log, f"コピー: {len(copied)} ファイル\n")
+        elif input_kind == "files":
+            self.after(0, self.append_log, "通常ファイルをコピー中...\n")
+            copied_count = 0
+            for src in files_to_copy:
+                dest = dev_dir / src.name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+                copied_count += 1
+            self.after(0, self.append_log, f"コピー: {copied_count} ファイル\n")
+        else:
+            raise RuntimeError("反映対象が指定されていません。")
+        code, status = self.run_git_capture([git_path, "status", "--porcelain"], dev_dir)
+        self.after(0, self.append_log, "git status 実行...\n")
+        if code != 0:
+            raise RuntimeError(f"git status に失敗しました。\n{status}")
+        if not status.strip():
+            self.after(0, self.append_log, "変更がありません。commitは作成されませんでした。\n")
+            self.after(0, self.on_worker_done, False)
+            return
+        commands: list[tuple[str, list[str]]] = [
+            ("git add -A", [git_path, "add", "-A"]),
+            ("git commit", [git_path, "commit", "-m", summary] + (["-m", description] if description else [])),
+            ("git push", [git_path, "push"]),
+        ]
+        for label, cmd in commands:
+            self.after(0, self.append_log, f"{label} 実行...\n")
+            code, output = self.run_git_capture(cmd, dev_dir)
+            if output:
+                self.after(0, self.append_log, output)
+            if code != 0:
+                raise RuntimeError(f"{label} に失敗しました。終了コード: {code}\n{output}")
+        self.after(0, self.on_worker_done, True)
+
+    def on_worker_error(self, exc: Exception) -> None:
+        self.append_log(f"ERROR: {exc}\n")
+        self.running = False
+        self.commit_button.configure(state="normal")
+        self.close_button.configure(text="キャンセル", state="normal")
+        self.app.set_status("修正反映に失敗しました。")
+        messagebox.showerror("修正反映失敗", str(exc), parent=self)
+
+    def on_worker_done(self, committed_and_pushed: bool) -> None:
+        self.running = False
+        self.done = True
+        self.commit_button.configure(state="disabled")
+        self.close_button.configure(text="閉じる", state="normal")
+        if committed_and_pushed:
+            self.append_log("完了しました。\n")
+            self.app.set_status(f"修正反映を完了しました: {self.tool.get('title', '')}")
+            messagebox.showinfo("完了", "Commit & Push が完了しました。", parent=self)
+        else:
+            self.app.set_status("修正反映を終了しました。")
+        self.update_dirty_status()
+
+    def close(self) -> None:
+        if self._closing:
+            return
+        if self.running:
+            messagebox.showinfo("処理中", "処理中は閉じられません。", parent=self)
+            return
+        if not self.done:
+            dirty = bool(self.input_paths) or self.summary_var.get().strip() != self.initial_summary or bool(self.description_text.get("1.0", "end-1c").strip())
+            if dirty:
+                if not messagebox.askyesno("確認", "入力中の修正内容があります。\n閉じますか？", parent=self):
+                    return
+        self._closing = True
+        self._dispose_drop_targets()
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        try:
+            self.after_idle(self.destroy)
+        except Exception:
+            self.destroy()
+
+    def _dispose_drop_targets(self) -> None:
+        self.drop_targets = []
+
+
 class GitHubToolLauncher:
     def __init__(self) -> None:
         migrate_old_repository_dir()
@@ -1352,7 +1984,10 @@ class GitHubToolLauncher:
         self.filtered_indices: list[int] = []
         self.process_running = False
 
-        self.root = tk.Tk()
+        try:
+            self.root = TkinterDnD.Tk() if TkinterDnD is not None else tk.Tk()
+        except Exception:
+            self.root = tk.Tk()
         self.root.withdraw()
         self.root.title(APP_NAME)
         self.root.minsize(*WINDOW_MIN_SIZE)
@@ -1562,6 +2197,8 @@ class GitHubToolLauncher:
         self.tree_context_menu.add_command(label="開発環境", command=self.open_selected_development_folder)
         self.tree_context_menu.add_command(label="GitHub", command=self.open_selected_github_page)
         self.tree_context_menu.add_command(label="README", command=self.open_selected_readme)
+        self.tree_context_menu.add_separator()
+        self.tree_context_menu.add_command(label="修正反映", command=self.open_fix_apply_dialog)
         self.tree_context_menu.add_separator()
         self.tree_context_menu.add_command(label="設定", command=self.open_selected_tool_settings)
         self.tree_context_menu.add_cascade(label="ラベル", menu=self.build_label_submenu(self.tree_context_menu))
@@ -1816,6 +2453,12 @@ class GitHubToolLauncher:
             messagebox.showwarning("未選択", "設定するツールを選択してください。", parent=self.root)
             return
         ToolEditDialog(self, index)
+
+    def open_fix_apply_dialog(self) -> None:
+        tool = self.require_tool()
+        if tool is None or not self.validate_tool_paths(tool):
+            return
+        FixApplyDialog(self, tool)
 
     def delete_selected_tool(self) -> None:
         index = self.get_selected_tool_index()

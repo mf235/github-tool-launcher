@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -8,7 +9,7 @@ import zipfile
 from pathlib import Path
 
 APP_NAME = "github-tool-launcher"
-APP_VERSION = "v1.9.3"
+APP_VERSION = "v1.11.2"
 SCRIPT_NAME = "github-tool-launcher.py"
 ICON_PATH = Path("resources/icons/app.ico")
 WINDOW_ICON_PATH = Path("resources/icons/window.png")
@@ -59,6 +60,8 @@ def build_exe() -> Path:
         f"resources{add_data_sep}resources",
         SCRIPT_NAME,
     ]
+    if importlib.util.find_spec("tkinterdnd2") is not None:
+        cmd.extend(["--collect-all", "tkinterdnd2"])
     print("run:", " ".join(cmd))
     subprocess.run(cmd, check=True)
     exe_name = f"{APP_NAME}.exe" if os.name == "nt" else APP_NAME
