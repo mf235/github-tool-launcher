@@ -1,5 +1,5 @@
 # GitHub Tool Launcher
-# APP_VERSION: v1.11.4
+# APP_VERSION: v1.11.5
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ except Exception:
     TkinterDnD = None
 
 APP_NAME = "GitHub Tool Launcher"
-APP_VERSION = "v1.11.4"
+APP_VERSION = "v1.11.5"
 
 RUN_METHODS = [
     ("auto", "自動"),
@@ -1579,14 +1579,16 @@ class FixApplyDialog(tk.Toplevel):
         self.drop_label.bind("<Button-1>", lambda _e: self.select_input_files())
 
         input_buttons = ttk.Frame(frame)
-        input_buttons.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        ttk.Button(input_buttons, text="ファイル/ZIPを選択", command=self.select_input_files).pack(side="left")
+        input_buttons.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        input_buttons.columnconfigure(0, weight=1)
+        ttk.Button(input_buttons, text="ファイル/ZIPを選択", command=self.select_input_files).grid(row=0, column=0, sticky="w")
         ttk.Label(
             input_buttons,
             text="※未選択の場合は開発環境の既存変更をCommit & Pushします。\n※指定されていない既存ファイルは削除しません。",
             foreground="#666666",
             justify="left",
-        ).pack(side="left", padx=(10, 0))
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", pady=(6, 0))
 
         form = ttk.Frame(frame)
         form.grid(row=3, column=0, sticky="ew")
@@ -1622,7 +1624,7 @@ class FixApplyDialog(tk.Toplevel):
         self.summary_var.trace_add("write", lambda *_args: self.update_dirty_status())
         self.description_text.bind("<<Modified>>", self.on_description_modified)
         self.install_drop_targets()
-        show_toplevel_on_parent(self, app.root, width=760, height=720, modal=False)
+        show_toplevel_on_parent(self, app.root, width=760, height=780, modal=False)
         self.summary_entry.focus_set()
         self.update_dirty_status()
 
