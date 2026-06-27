@@ -1,5 +1,5 @@
 # GitHub Tool Launcher
-# APP_VERSION: v1.11.3
+# APP_VERSION: v1.11.4
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ except Exception:
     TkinterDnD = None
 
 APP_NAME = "GitHub Tool Launcher"
-APP_VERSION = "v1.11.3"
+APP_VERSION = "v1.11.4"
 
 RUN_METHODS = [
     ("auto", "自動"),
@@ -1551,7 +1551,7 @@ class FixApplyDialog(tk.Toplevel):
 
         self.summary_var = tk.StringVar(value=self.initial_summary)
         self.dnd_enabled = False
-        self.input_var = tk.StringVar(value="ファイル/ZIPをここにD&D、または選択してください。未選択でも既存変更をCommit & Pushできます。")
+        self.input_var = tk.StringVar(value="ファイル/ZIPをここにD&D、または選択してください。")
 
         frame = ttk.Frame(self, padding=14)
         frame.grid(row=0, column=0, sticky="nsew")
@@ -1581,7 +1581,12 @@ class FixApplyDialog(tk.Toplevel):
         input_buttons = ttk.Frame(frame)
         input_buttons.grid(row=2, column=0, sticky="ew", pady=(0, 10))
         ttk.Button(input_buttons, text="ファイル/ZIPを選択", command=self.select_input_files).pack(side="left")
-        ttk.Label(input_buttons, text="※未選択なら開発環境の既存変更をCommit & Pushします。指定されていない既存ファイルは削除しません。", foreground="#666666").pack(side="left", padx=(10, 0))
+        ttk.Label(
+            input_buttons,
+            text="※未選択の場合は開発環境の既存変更をCommit & Pushします。\n※指定されていない既存ファイルは削除しません。",
+            foreground="#666666",
+            justify="left",
+        ).pack(side="left", padx=(10, 0))
 
         form = ttk.Frame(frame)
         form.grid(row=3, column=0, sticky="ew")
@@ -1617,7 +1622,7 @@ class FixApplyDialog(tk.Toplevel):
         self.summary_var.trace_add("write", lambda *_args: self.update_dirty_status())
         self.description_text.bind("<<Modified>>", self.on_description_modified)
         self.install_drop_targets()
-        show_toplevel_on_parent(self, app.root, width=760, height=660, modal=False)
+        show_toplevel_on_parent(self, app.root, width=760, height=720, modal=False)
         self.summary_entry.focus_set()
         self.update_dirty_status()
 
@@ -1627,7 +1632,7 @@ class FixApplyDialog(tk.Toplevel):
             if try_enable_tkdnd(widget, self.on_files_dropped):
                 self.dnd_enabled = True
         if not self.dnd_enabled:
-            self.input_var.set("ファイル/ZIPを選択してください。未選択でも既存変更をCommit & Pushできます。")
+            self.input_var.set("ファイル/ZIPを選択してください。")
             self.append_log("D&Dは無効です。tkinterdnd2 が使える環境ではD&Dできます。\n")
 
     def on_description_modified(self, _event: tk.Event | None = None) -> None:
