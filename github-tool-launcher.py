@@ -1,5 +1,5 @@
 # GitHub Tool Launcher
-# APP_VERSION: v1.8.0
+# APP_VERSION: v1.9.3
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ import tkinter.font as tkfont
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
 APP_NAME = "GitHub Tool Launcher"
-APP_VERSION = "v1.8.0"
+APP_VERSION = "v1.9.3"
 
 RUN_METHODS = [
     ("auto", "自動"),
@@ -760,8 +760,8 @@ class LabelManagerDialog(tk.Toplevel):
         buttons.grid(row=11, column=0, columnspan=6, sticky="ew", pady=(10, 0))
         ttk.Button(buttons, text="初期値に戻す", command=self.reset_defaults).pack(side="left")
         ttk.Label(buttons, textvariable=self.dirty_var, foreground="#b06000").pack(side="left", padx=(12, 0))
-        ttk.Button(buttons, text="保存して閉じる", command=self.save).pack(side="right", padx=(8, 0))
-        ttk.Button(buttons, text="閉じる", command=self.close).pack(side="right")
+        ttk.Button(buttons, text="閉じる", command=self.close).pack(side="right", padx=(8, 0))
+        ttk.Button(buttons, text="保存して閉じる", command=self.save).pack(side="right")
 
         self.snapshot = self.current_settings_for_compare()
         self._loading = False
@@ -856,20 +856,18 @@ class LabelManagerDialog(tk.Toplevel):
         self.destroy()
 
 
-class ToolManagerDialog(tk.Toplevel):
-    def __init__(self, app: "GitHubToolLauncher") -> None:
+
+class ToolEditDialog(tk.Toplevel):
+    def __init__(self, app: "GitHubToolLauncher", index: int | None = None) -> None:
         super().__init__(app.root)
         self.withdraw()
         self.app = app
-        self.title("ツール管理")
-        self.geometry("1040x700")
-        self.minsize(900, 580)
+        self.index = index
+        self.is_new = index is None
+        self.title("新規追加" if self.is_new else "設定")
+        self.resizable(False, False)
         self.transient(app.root)
-
-        self.current_index: int | None = None
-        self.form_snapshot: dict[str, str] = {}
-        self._loading_form = False
-        self._suppress_select = False
+        self.protocol("WM_DELETE_WINDOW", self.close)
 
         self.title_var = tk.StringVar()
         self.repo_var = tk.StringVar()
@@ -879,84 +877,54 @@ class ToolManagerDialog(tk.Toplevel):
         self.run_method_var = tk.StringVar(value=RUN_METHOD_LABELS["auto"])
         self.custom_command_var = tk.StringVar()
         self.dirty_var = tk.StringVar()
+        self.form_snapshot: dict[str, str] = {}
+        self._loading_form = False
 
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
 
-        root_frame = ttk.Frame(self, padding=12)
-        root_frame.grid(row=0, column=0, sticky="nsew")
-        root_frame.columnconfigure(0, weight=1)
-        root_frame.rowconfigure(0, weight=1)
+        frame = ttk.Frame(self, padding=14)
+        frame.grid(row=0, column=0, sticky="nsew")
+        frame.columnconfigure(1, weight=1)
+        frame.columnconfigure(3, weight=1)
 
-        self.tree = ttk.Treeview(
-            root_frame,
-            columns=("title", "repository", "category", "script", "run_method"),
-            show="headings",
-            selectmode="browse",
-        )
-        self.tree.heading("title", text="タイトル")
-        self.tree.heading("repository", text="リポジトリ")
-        self.tree.heading("category", text="カテゴリ")
-        self.tree.heading("script", text="実行スクリプト")
-        self.tree.heading("run_method", text="実行方法")
-        self.tree.column("title", width=250, anchor="w")
-        self.tree.column("repository", width=220, anchor="w")
-        self.tree.column("category", width=120, anchor="w")
-        self.tree.column("script", width=260, anchor="w")
-        self.tree.column("run_method", width=90, anchor="w")
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        yscroll = ttk.Scrollbar(root_frame, orient="vertical", command=self.tree.yview)
-        yscroll.grid(row=0, column=1, sticky="ns")
-        self.tree.configure(yscrollcommand=yscroll.set)
-        self.tree.bind("<<TreeviewSelect>>", self.on_select)
-        self.tree.bind("<Double-1>", lambda _e: self.fill_from_selection())
+        ttk.Label(frame, text="タイトル").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=5)
+        ttk.Entry(frame, textvariable=self.title_var, width=48).grid(row=0, column=1, columnspan=3, sticky="ew", pady=5)
 
-        form = ttk.LabelFrame(root_frame, text="登録内容", padding=10)
-        form.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        form.columnconfigure(1, weight=1)
-        form.columnconfigure(3, weight=1)
+        ttk.Label(frame, text="リポジトリ名").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=5)
+        ttk.Entry(frame, textvariable=self.repo_var, width=36).grid(row=1, column=1, sticky="ew", pady=5)
+        ttk.Label(frame, text="カテゴリ").grid(row=1, column=2, sticky="w", padx=(14, 8), pady=5)
+        ttk.Entry(frame, textvariable=self.category_var, width=28).grid(row=1, column=3, sticky="ew", pady=5)
 
-        ttk.Label(form, text="タイトル").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
-        ttk.Entry(form, textvariable=self.title_var).grid(row=0, column=1, columnspan=3, sticky="ew", pady=4)
+        ttk.Label(frame, text="実行スクリプト").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=5)
+        ttk.Entry(frame, textvariable=self.script_var).grid(row=2, column=1, sticky="ew", pady=5)
+        ttk.Label(frame, text="タグ").grid(row=2, column=2, sticky="w", padx=(14, 8), pady=5)
+        ttk.Entry(frame, textvariable=self.tags_var).grid(row=2, column=3, sticky="ew", pady=5)
 
-        ttk.Label(form, text="リポジトリ名").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
-        ttk.Entry(form, textvariable=self.repo_var).grid(row=1, column=1, sticky="ew", pady=4)
-        ttk.Label(form, text="カテゴリ").grid(row=1, column=2, sticky="w", padx=(14, 8), pady=4)
-        ttk.Entry(form, textvariable=self.category_var).grid(row=1, column=3, sticky="ew", pady=4)
-
-        ttk.Label(form, text="実行スクリプト").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
-        ttk.Entry(form, textvariable=self.script_var).grid(row=2, column=1, sticky="ew", pady=4)
-        ttk.Label(form, text="タグ").grid(row=2, column=2, sticky="w", padx=(14, 8), pady=4)
-        ttk.Entry(form, textvariable=self.tags_var).grid(row=2, column=3, sticky="ew", pady=4)
-
-        ttk.Label(form, text="実行方法").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Label(frame, text="実行方法").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=5)
         ttk.Combobox(
-            form,
+            frame,
             textvariable=self.run_method_var,
             values=[label for _key, label in RUN_METHODS],
             state="readonly",
             width=18,
-        ).grid(row=3, column=1, sticky="w", pady=4)
-        ttk.Label(form, text="任意コマンド").grid(row=3, column=2, sticky="w", padx=(14, 8), pady=4)
-        ttk.Entry(form, textvariable=self.custom_command_var).grid(row=3, column=3, sticky="ew", pady=4)
+        ).grid(row=3, column=1, sticky="w", pady=5)
+        ttk.Label(frame, text="任意コマンド").grid(row=3, column=2, sticky="w", padx=(14, 8), pady=5)
+        ttk.Entry(frame, textvariable=self.custom_command_var).grid(row=3, column=3, sticky="ew", pady=5)
 
         hint = ttk.Label(
-            form,
+            frame,
             text="任意コマンドでは {script} {script_q} {script_path} {script_path_q} {repo} {repo_q} {repo_dir} {repo_dir_q} が使えます。",
             foreground="#666666",
+            wraplength=820,
         )
-        hint.grid(row=4, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        hint.grid(row=4, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
-        buttons = ttk.Frame(root_frame)
-        buttons.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        ttk.Button(buttons, text="追加/更新", command=self.add_or_update).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="新規入力", command=self.clear_form).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="元に戻す", command=self.revert_form).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="削除", command=self.delete_selected).pack(side="left", padx=(0, 18))
-        ttk.Button(buttons, text="上へ", command=lambda: self.move_selected(-1)).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="下へ", command=lambda: self.move_selected(1)).pack(side="left", padx=(0, 6))
-        ttk.Label(buttons, textvariable=self.dirty_var, foreground="#b06000").pack(side="left", padx=(12, 0))
-        ttk.Button(buttons, text="閉じる", command=self.close).pack(side="right")
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(14, 0))
+        ttk.Label(buttons, textvariable=self.dirty_var, foreground="#b06000").pack(side="left")
+        ttk.Button(buttons, text="キャンセル", command=self.close).pack(side="right")
+        ttk.Button(buttons, text="追加" if self.is_new else "保存", command=self.save).pack(side="right", padx=(0, 8))
 
         for var in (
             self.title_var,
@@ -969,12 +937,14 @@ class ToolManagerDialog(tk.Toplevel):
         ):
             var.trace_add("write", lambda *_args: self.on_form_changed())
 
-        self.refresh()
-        self.set_blank_form()
+        self.set_form_values(self.initial_values())
         self.bind("<Escape>", close_event_break(self.close))
-        show_toplevel_on_parent(self, app.root, 1040, 700, modal=True)
+        # Use the natural requested height instead of a fixed height.
+        # A fixed 300px client area left a visible blank band at the bottom
+        # on Windows when the dialog content was shorter than the forced size.
+        show_toplevel_on_parent(self, app.root, 900, None, modal=True)
 
-    def blank_form_values(self) -> dict[str, str]:
+    def blank_values(self) -> dict[str, str]:
         return {
             "title": "",
             "repository": "",
@@ -984,6 +954,13 @@ class ToolManagerDialog(tk.Toplevel):
             "run_method": "auto",
             "custom_command": "",
         }
+
+    def initial_values(self) -> dict[str, str]:
+        if self.index is None or not (0 <= self.index < len(self.app.tools)):
+            return self.blank_values()
+        values = self.blank_values()
+        values.update(self.app.tools[self.index])
+        return values
 
     def current_form_values(self) -> dict[str, str]:
         method_label = self.run_method_var.get().strip()
@@ -997,18 +974,7 @@ class ToolManagerDialog(tk.Toplevel):
             "custom_command": self.custom_command_var.get().strip(),
         }
 
-    def is_dirty(self) -> bool:
-        return self.current_form_values() != self.form_snapshot
-
-    def on_form_changed(self) -> None:
-        if self._loading_form:
-            return
-        self.update_dirty_status()
-
-    def update_dirty_status(self) -> None:
-        self.dirty_var.set("未保存の変更あり" if self.is_dirty() else "")
-
-    def set_form_values(self, values: dict[str, str], index: int | None) -> None:
+    def set_form_values(self, values: dict[str, str]) -> None:
         self._loading_form = True
         try:
             self.title_var.set(values.get("title", ""))
@@ -1021,83 +987,19 @@ class ToolManagerDialog(tk.Toplevel):
             self.custom_command_var.set(values.get("custom_command", ""))
         finally:
             self._loading_form = False
-        self.current_index = index
         self.form_snapshot = self.current_form_values()
         self.update_dirty_status()
 
-    def set_blank_form(self) -> None:
-        self.set_form_values(self.blank_form_values(), None)
+    def is_dirty(self) -> bool:
+        return self.current_form_values() != self.form_snapshot
 
-    def refresh(self, select_index: int | None = None) -> None:
-        self._suppress_select = True
-        try:
-            self.tree.delete(*self.tree.get_children())
-            for i, tool in enumerate(self.app.tools):
-                method = RUN_METHOD_LABELS.get(tool.get("run_method", "auto"), "自動")
-                self.tree.insert(
-                    "",
-                    "end",
-                    iid=str(i),
-                    values=(tool["title"], tool["repository"], tool.get("category", ""), tool["script"], method),
-                )
-            if select_index is not None and 0 <= select_index < len(self.app.tools):
-                self.tree.selection_set(str(select_index))
-                self.tree.see(str(select_index))
-            else:
-                self.tree.selection_remove(self.tree.selection())
-        finally:
-            self._suppress_select = False
+    def on_form_changed(self) -> None:
+        if self._loading_form:
+            return
+        self.update_dirty_status()
 
-    def get_selected_index(self) -> int | None:
-        selection = self.tree.selection()
-        if not selection:
-            return None
-        try:
-            return int(selection[0])
-        except ValueError:
-            return None
-
-    def restore_tree_selection(self) -> None:
-        self._suppress_select = True
-        try:
-            self.tree.selection_remove(self.tree.selection())
-            if self.current_index is not None and 0 <= self.current_index < len(self.app.tools):
-                self.tree.selection_set(str(self.current_index))
-                self.tree.see(str(self.current_index))
-        finally:
-            self._suppress_select = False
-
-    def on_select(self, _event: tk.Event | None = None) -> None:
-        if self._suppress_select:
-            return
-        new_index = self.get_selected_index()
-        if new_index == self.current_index:
-            return
-        if not self.confirm_unsaved_changes():
-            self.restore_tree_selection()
-            return
-        if new_index is None or not (0 <= new_index < len(self.app.tools)):
-            self.set_blank_form()
-            return
-        self.refresh(new_index)
-        self.fill_from_index(new_index)
-
-    def fill_from_selection(self) -> None:
-        index = self.get_selected_index()
-        if index is None:
-            return
-        if self.is_dirty() and index != self.current_index:
-            if not self.confirm_unsaved_changes():
-                self.restore_tree_selection()
-                return
-        if 0 <= index < len(self.app.tools):
-            self.refresh(index)
-            self.fill_from_index(index)
-
-    def fill_from_index(self, index: int) -> None:
-        if not (0 <= index < len(self.app.tools)):
-            return
-        self.set_form_values(self.app.tools[index], index)
+    def update_dirty_status(self) -> None:
+        self.dirty_var.set("未保存の変更あり" if self.is_dirty() else "")
 
     def validate_form(self) -> dict[str, str] | None:
         values = self.current_form_values()
@@ -1113,7 +1015,7 @@ class ToolManagerDialog(tk.Toplevel):
             messagebox.showwarning("入力エラー", script_error, parent=self)
             return None
         values["script"] = normalize_script_path_text(values["script"])
-        duplicate_index = self.app.find_repository_index(values["repository"], exclude_index=self.current_index)
+        duplicate_index = self.app.find_repository_index(values["repository"], exclude_index=self.index)
         if duplicate_index is not None:
             messagebox.showwarning("入力エラー", "同じリポジトリ名のツールがすでに登録されています。", parent=self)
             return None
@@ -1122,122 +1024,49 @@ class ToolManagerDialog(tk.Toplevel):
             return None
         return values
 
-    def save_current_form_data(self) -> int | None:
+    def save(self) -> None:
         values = self.validate_form()
         if values is None:
-            return None
-        index = self.current_index
+            return
         old_meta: dict[str, str] = {}
-        if index is not None and 0 <= index < len(self.app.tools):
+        if self.index is not None and 0 <= self.index < len(self.app.tools):
+            old_tool = self.app.tools[self.index]
             old_meta = {
-                "last_run_at": self.app.tools[index].get("last_run_at", ""),
-                "last_update_at": self.app.tools[index].get("last_update_at", ""),
-                "last_update_status": self.app.tools[index].get("last_update_status", ""),
-                "label": self.app.tools[index].get("label", ""),
+                "last_run_at": old_tool.get("last_run_at", ""),
+                "last_update_at": old_tool.get("last_update_at", ""),
+                "last_update_status": old_tool.get("last_update_status", ""),
+                "label": old_tool.get("label", ""),
             }
-        self._loading_form = True
-        try:
-            self.script_var.set(values["script"])
-        finally:
-            self._loading_form = False
         tool = dict(TOOL_FIELD_DEFAULTS)
         tool.update(old_meta)
         tool.update(values)
-        if index is None:
+        if self.index is None:
             self.app.tools.append(tool)
-            index = len(self.app.tools) - 1
+            selected_index = len(self.app.tools) - 1
+            status_message = "ツールを追加しました。"
         else:
-            self.app.tools[index] = tool
+            self.app.tools[self.index] = tool
+            selected_index = self.index
+            status_message = "ツール設定を保存しました。"
         self.app.save_tools()
         self.app.refresh_category_filter()
-        self.app.refresh_tree()
-        self.current_index = index
-        self.form_snapshot = self.current_form_values()
-        self.update_dirty_status()
-        return index
+        self.app.refresh_tree(select_index=selected_index)
+        self.app.set_status(status_message)
+        self.destroy()
 
-    def confirm_unsaved_changes(self) -> bool:
+    def close(self) -> None:
         if not self.is_dirty():
-            return True
+            self.destroy()
+            return
         answer = messagebox.askyesnocancel(
             "未保存の変更",
-            "変更内容が保存されていません。\n保存しますか？\n\nはい: 保存して続行\nいいえ: 破棄して続行\nキャンセル: 操作を中止",
+            "変更内容が保存されていません。\n保存しますか？\n\nはい: 保存して閉じる\nいいえ: 破棄して閉じる\nキャンセル: 閉じない",
             parent=self,
         )
         if answer is None:
-            return False
+            return
         if answer:
-            return self.save_current_form_data() is not None
-        return True
-
-    def clear_form(self) -> None:
-        if not self.confirm_unsaved_changes():
-            return
-        self._suppress_select = True
-        try:
-            self.tree.selection_remove(self.tree.selection())
-        finally:
-            self._suppress_select = False
-        self.set_blank_form()
-
-    def revert_form(self) -> None:
-        if self.current_index is None:
-            self.set_blank_form()
-            return
-        if 0 <= self.current_index < len(self.app.tools):
-            self.fill_from_index(self.current_index)
-
-    def add_or_update(self) -> None:
-        index = self.save_current_form_data()
-        if index is None:
-            return
-        self.refresh(index)
-        self.fill_from_index(index)
-        self.app.set_status("ツール登録を保存しました。")
-
-    def delete_selected(self) -> None:
-        if not self.confirm_unsaved_changes():
-            return
-        index = self.get_selected_index()
-        if index is None:
-            index = self.current_index
-        if index is None or not (0 <= index < len(self.app.tools)):
-            return
-        tool = self.app.tools[index]
-        if not messagebox.askyesno("削除", f"{tool['title']} を削除しますか？\nリポジトリ本体は削除しません。", parent=self):
-            return
-        del self.app.tools[index]
-        self.app.save_tools()
-        next_index = min(index, len(self.app.tools) - 1) if self.app.tools else None
-        self.refresh(next_index)
-        if next_index is not None:
-            self.fill_from_index(next_index)
-        else:
-            self.set_blank_form()
-        self.app.refresh_category_filter()
-        self.app.refresh_tree()
-        self.app.set_status("ツール登録を削除しました。")
-
-    def move_selected(self, delta: int) -> None:
-        if not self.confirm_unsaved_changes():
-            return
-        index = self.get_selected_index()
-        if index is None:
-            index = self.current_index
-        if index is None:
-            return
-        new_index = index + delta
-        if not (0 <= new_index < len(self.app.tools)):
-            return
-        self.app.tools[index], self.app.tools[new_index] = self.app.tools[new_index], self.app.tools[index]
-        self.app.save_tools()
-        self.refresh(new_index)
-        self.fill_from_index(new_index)
-        self.app.refresh_tree()
-        self.app.set_status("並び順を保存しました。")
-
-    def close(self) -> None:
-        if not self.confirm_unsaved_changes():
+            self.save()
             return
         self.destroy()
 
@@ -1487,7 +1316,7 @@ class RepositoryImportDialog(tk.Toplevel):
                     dialog.finish()
                     messagebox.showinfo(
                         "登録完了",
-                        f"{len(added_tools)} 件登録しました。\n実行スクリプト名は必要に応じてツール管理で調整してください。",
+                        f"{len(added_tools)} 件登録しました。\n実行スクリプト名は必要に応じて設定で調整してください。",
                         parent=self,
                     )
                     self.destroy()
@@ -1612,6 +1441,8 @@ class GitHubToolLauncher:
         menubar.add_cascade(label="ファイル", menu=file_menu)
 
         action_menu = tk.Menu(menubar, tearoff=False)
+        action_menu.add_command(label="新規追加", command=self.open_new_tool_dialog)
+        action_menu.add_separator()
         action_menu.add_command(label="実行", command=self.run_selected_tool, accelerator="Enter")
         action_menu.add_command(label="コマンドプロンプト", command=self.open_selected_command_prompt)
         action_menu.add_separator()
@@ -1620,7 +1451,9 @@ class GitHubToolLauncher:
         action_menu.add_command(label="GitHub", command=self.open_selected_github_page)
         action_menu.add_command(label="README", command=self.open_selected_readme)
         action_menu.add_separator()
+        action_menu.add_command(label="設定", command=self.open_selected_tool_settings)
         action_menu.add_cascade(label="ラベル", menu=self.build_label_submenu(action_menu))
+        action_menu.add_command(label="削除", command=self.delete_selected_tool)
         action_menu.add_separator()
         action_menu.add_command(label="最新バージョン取得", command=self.update_selected_repository, accelerator="F5")
         action_menu.add_command(label="全取得", command=self.update_all_repositories)
@@ -1628,7 +1461,6 @@ class GitHubToolLauncher:
 
         settings_menu = tk.Menu(menubar, tearoff=False)
         settings_menu.add_command(label="環境設定", command=self.open_settings)
-        settings_menu.add_command(label="ツール管理", command=self.open_tool_manager)
         settings_menu.add_command(label="GitHub候補登録", command=self.open_repository_import)
         settings_menu.add_command(label="ラベル管理", command=self.open_label_manager)
         settings_menu.add_separator()
@@ -1662,18 +1494,19 @@ class GitHubToolLauncher:
 
         filter_frame = ttk.Frame(self.root, padding=(12, 12, 12, 6))
         filter_frame.grid(row=0, column=0, sticky="ew")
-        filter_frame.columnconfigure(0, weight=1)
+        filter_frame.columnconfigure(1, weight=1)
 
+        ttk.Label(filter_frame, text="検索").grid(row=0, column=0, sticky="w", padx=(0, 6))
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_args: self.refresh_tree())
         self.search_entry = ttk.Entry(filter_frame, textvariable=self.search_var)
-        self.search_entry.grid(row=0, column=0, sticky="ew")
-        ttk.Button(filter_frame, text="×", width=3, command=self.clear_search).grid(row=0, column=1, sticky="e", padx=(6, 12))
+        self.search_entry.grid(row=0, column=1, sticky="ew")
+        ttk.Button(filter_frame, text="×", width=3, command=self.clear_search).grid(row=0, column=2, sticky="e", padx=(6, 12))
 
-        ttk.Label(filter_frame, text="カテゴリ").grid(row=0, column=2, sticky="e", padx=(0, 6))
+        ttk.Label(filter_frame, text="カテゴリ").grid(row=0, column=3, sticky="e", padx=(0, 6))
         self.category_filter_var = tk.StringVar(value="すべて")
         self.category_combo = ttk.Combobox(filter_frame, textvariable=self.category_filter_var, values=["すべて"], state="readonly", width=18)
-        self.category_combo.grid(row=0, column=3, sticky="e")
+        self.category_combo.grid(row=0, column=4, sticky="e")
         self.category_combo.bind("<<ComboboxSelected>>", lambda _e: self.refresh_tree())
 
         list_frame = ttk.Frame(self.root, padding=(12, 0, 12, 6))
@@ -1711,6 +1544,16 @@ class GitHubToolLauncher:
         self.tree.bind("<Button-3>", self.show_tree_context_menu)
         self.tree.bind("<Control-Button-1>", self.show_tree_context_menu)
 
+        self.tree.bind("<ButtonPress-1>", self.on_tree_drag_start)
+        self.tree.bind("<B1-Motion>", self.on_tree_drag_motion)
+        self.tree.bind("<ButtonRelease-1>", self.on_tree_drag_release)
+        self.drag_source_index: int | None = None
+        self.dragging_tree_item = False
+
+        self.drag_insert_index: int | None = None
+        self.drag_indicator = tk.Frame(self.tree, background="#ff8a00", height=2, borderwidth=0)
+        self.drag_indicator.place_forget()
+
         self.tree_context_menu = tk.Menu(self.root, tearoff=False)
         self.tree_context_menu.add_command(label="実行", command=self.run_selected_tool)
         self.tree_context_menu.add_command(label="コマンドプロンプト", command=self.open_selected_command_prompt)
@@ -1720,7 +1563,9 @@ class GitHubToolLauncher:
         self.tree_context_menu.add_command(label="GitHub", command=self.open_selected_github_page)
         self.tree_context_menu.add_command(label="README", command=self.open_selected_readme)
         self.tree_context_menu.add_separator()
+        self.tree_context_menu.add_command(label="設定", command=self.open_selected_tool_settings)
         self.tree_context_menu.add_cascade(label="ラベル", menu=self.build_label_submenu(self.tree_context_menu))
+        self.tree_context_menu.add_command(label="削除", command=self.delete_selected_tool)
         self.tree_context_menu.add_separator()
         self.tree_context_menu.add_command(label="最新バージョン取得", command=self.update_selected_repository)
 
@@ -1779,8 +1624,8 @@ class GitHubToolLauncher:
             return "要確認"
         return "未取得"
 
-    def refresh_tree(self) -> None:
-        old_selection_index = self.get_selected_tool_index()
+    def refresh_tree(self, select_index: int | None = None) -> None:
+        old_selection_index = select_index if select_index is not None else self.get_selected_tool_index()
         query = self.search_var.get().strip().lower() if hasattr(self, "search_var") else ""
         category_filter = self.category_filter_var.get() if hasattr(self, "category_filter_var") else "すべて"
         self.tree.delete(*self.tree.get_children())
@@ -1803,7 +1648,12 @@ class GitHubToolLauncher:
             item_id = str(index)
             self.filtered_indices.append(index)
             label_id = normalize_label_id(tool.get("label", ""))
-            tags = (f"label_{label_id}",) if label_id else ()
+            if label_id:
+                tags = (f"label_{label_id}",)
+            elif tool.get("last_update_status", "") == "failed":
+                tags = ("state_failed",)
+            else:
+                tags = ()
             self.tree.insert(
                 "",
                 "end",
@@ -1848,6 +1698,139 @@ class GitHubToolLauncher:
         finally:
             self.tree_context_menu.grab_release()
         return "break"
+
+    def is_unfiltered_view(self) -> bool:
+        query = self.search_var.get().strip() if hasattr(self, "search_var") else ""
+        category = self.category_filter_var.get() if hasattr(self, "category_filter_var") else "すべて"
+        return not query and category == "すべて"
+
+    def hide_drag_indicator(self) -> None:
+        if hasattr(self, "drag_indicator"):
+            self.drag_indicator.place_forget()
+        self.drag_insert_index = None
+
+    def get_drag_insert_position(self, y: int) -> tuple[int, int] | None:
+        visible = list(self.tree.get_children(""))
+        if not visible:
+            return None
+        row_id = self.tree.identify_row(y)
+        if row_id:
+            try:
+                row_index = int(row_id)
+            except ValueError:
+                return None
+            bbox = self.tree.bbox(row_id)
+            if not bbox:
+                return None
+            _x, row_y, _w, row_h = bbox
+            if y < row_y + (row_h // 2):
+                return row_index, row_y
+            return row_index + 1, row_y + row_h
+
+        first_bbox = self.tree.bbox(visible[0])
+        last_bbox = self.tree.bbox(visible[-1])
+        if not first_bbox or not last_bbox:
+            return None
+        if y < first_bbox[1]:
+            return int(visible[0]), first_bbox[1]
+        return int(visible[-1]) + 1, last_bbox[1] + last_bbox[3]
+
+    def show_drag_indicator(self, y: int) -> None:
+        pos = self.get_drag_insert_position(y)
+        if pos is None:
+            self.hide_drag_indicator()
+            return
+        insert_index, line_y = pos
+        self.drag_insert_index = max(0, min(insert_index, len(self.tools)))
+        tree_width = max(1, self.tree.winfo_width())
+        line_y = max(0, min(line_y, max(0, self.tree.winfo_height() - 2)))
+        self.drag_indicator.place(x=0, y=line_y, width=tree_width, height=2)
+        self.drag_indicator.lift()
+
+    def on_tree_drag_start(self, event: tk.Event) -> None:
+        self.drag_source_index = None
+        self.dragging_tree_item = False
+        self.hide_drag_indicator()
+        if self.tree.identify_region(event.x, event.y) not in {"cell", "tree"}:
+            return
+        row_id = self.tree.identify_row(event.y)
+        if not row_id:
+            return
+        if not self.is_unfiltered_view():
+            self.set_status("絞り込み中は並び替えできません。")
+            return
+        try:
+            self.drag_source_index = int(row_id)
+            self.dragging_tree_item = True
+            self.tree.selection_set(row_id)
+            self.tree.focus(row_id)
+        except ValueError:
+            self.drag_source_index = None
+            self.dragging_tree_item = False
+
+    def on_tree_drag_motion(self, event: tk.Event) -> str | None:
+        if self.dragging_tree_item:
+            self.show_drag_indicator(event.y)
+            return "break"
+        return None
+
+    def on_tree_drag_release(self, event: tk.Event) -> str | None:
+        if not self.dragging_tree_item or self.drag_source_index is None:
+            self.hide_drag_indicator()
+            return None
+        source_index = self.drag_source_index
+        insert_index = self.drag_insert_index
+        self.drag_source_index = None
+        self.dragging_tree_item = False
+        self.hide_drag_indicator()
+        if not self.is_unfiltered_view():
+            self.set_status("絞り込み中は並び替えできません。")
+            return "break"
+        if not (0 <= source_index < len(self.tools)):
+            return "break"
+        if insert_index is None:
+            pos = self.get_drag_insert_position(event.y)
+            if pos is None:
+                return "break"
+            insert_index = pos[0]
+        insert_index = max(0, min(insert_index, len(self.tools)))
+        final_index = insert_index - 1 if insert_index > source_index else insert_index
+        final_index = max(0, min(final_index, len(self.tools) - 1))
+        if final_index == source_index:
+            self.refresh_tree(select_index=source_index)
+            return "break"
+        tool = self.tools.pop(source_index)
+        self.tools.insert(final_index, tool)
+        self.save_tools()
+        self.refresh_category_filter()
+        self.refresh_tree(select_index=final_index)
+        self.set_status(f"並び順を保存しました: {tool.get('title', '')}")
+        return "break"
+
+    def open_new_tool_dialog(self) -> None:
+        ToolEditDialog(self, None)
+
+    def open_selected_tool_settings(self) -> None:
+        index = self.get_selected_tool_index()
+        if index is None or not (0 <= index < len(self.tools)):
+            messagebox.showwarning("未選択", "設定するツールを選択してください。", parent=self.root)
+            return
+        ToolEditDialog(self, index)
+
+    def delete_selected_tool(self) -> None:
+        index = self.get_selected_tool_index()
+        if index is None or not (0 <= index < len(self.tools)):
+            messagebox.showwarning("未選択", "削除するツールを選択してください。", parent=self.root)
+            return
+        tool = self.tools[index]
+        if not messagebox.askyesno("削除", f"{tool.get('title', '')} を削除しますか？\nリポジトリ本体は削除しません。", parent=self.root):
+            return
+        del self.tools[index]
+        self.save_tools()
+        self.refresh_category_filter()
+        next_index = min(index, len(self.tools) - 1) if self.tools else None
+        self.refresh_tree(select_index=next_index)
+        self.set_status("ツール登録を削除しました。")
 
     def get_selected_tool_index(self) -> int | None:
         if not hasattr(self, "tree"):
@@ -1926,6 +1909,10 @@ class GitHubToolLauncher:
         if not hasattr(self, "tree"):
             return
         labels = normalize_label_settings(self.config.get("labels"))
+        try:
+            self.tree.tag_configure("state_failed", foreground="#a00000", background="#ffe0e0")
+        except tk.TclError:
+            pass
         for label_id, colors in labels.items():
             try:
                 self.tree.tag_configure(
@@ -1975,7 +1962,7 @@ class GitHubToolLauncher:
         SettingsDialog(self)
 
     def open_tool_manager(self) -> None:
-        ToolManagerDialog(self)
+        self.open_selected_tool_settings()
 
     def open_repository_import(self) -> None:
         github_user = str(self.config.get("github_user_id", "")).strip()
