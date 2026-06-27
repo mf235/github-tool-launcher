@@ -1,5 +1,5 @@
 # GitHub Tool Launcher
-# APP_VERSION: v1.11.2
+# APP_VERSION: v1.11.3
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ except Exception:
     TkinterDnD = None
 
 APP_NAME = "GitHub Tool Launcher"
-APP_VERSION = "v1.11.2"
+APP_VERSION = "v1.11.3"
 
 RUN_METHODS = [
     ("auto", "自動"),
@@ -1551,7 +1551,7 @@ class FixApplyDialog(tk.Toplevel):
 
         self.summary_var = tk.StringVar(value=self.initial_summary)
         self.dnd_enabled = False
-        self.input_var = tk.StringVar(value="ファイル/ZIPをここにD&D、または選択してください。")
+        self.input_var = tk.StringVar(value="ファイル/ZIPをここにD&D、または選択してください。未選択でも既存変更をCommit & Pushできます。")
 
         frame = ttk.Frame(self, padding=14)
         frame.grid(row=0, column=0, sticky="nsew")
@@ -1581,7 +1581,7 @@ class FixApplyDialog(tk.Toplevel):
         input_buttons = ttk.Frame(frame)
         input_buttons.grid(row=2, column=0, sticky="ew", pady=(0, 10))
         ttk.Button(input_buttons, text="ファイル/ZIPを選択", command=self.select_input_files).pack(side="left")
-        ttk.Label(input_buttons, text="※指定されていない既存ファイルは削除しません。", foreground="#666666").pack(side="left", padx=(10, 0))
+        ttk.Label(input_buttons, text="※未選択なら開発環境の既存変更をCommit & Pushします。指定されていない既存ファイルは削除しません。", foreground="#666666").pack(side="left", padx=(10, 0))
 
         form = ttk.Frame(frame)
         form.grid(row=3, column=0, sticky="ew")
@@ -1627,7 +1627,7 @@ class FixApplyDialog(tk.Toplevel):
             if try_enable_tkdnd(widget, self.on_files_dropped):
                 self.dnd_enabled = True
         if not self.dnd_enabled:
-            self.input_var.set("ファイル/ZIPを選択してください。")
+            self.input_var.set("ファイル/ZIPを選択してください。未選択でも既存変更をCommit & Pushできます。")
             self.append_log("D&Dは無効です。tkinterdnd2 が使える環境ではD&Dできます。\n")
 
     def on_description_modified(self, _event: tk.Event | None = None) -> None:
@@ -1790,9 +1790,6 @@ class FixApplyDialog(tk.Toplevel):
         if self.running:
             return
         tool = self.tool
-        if not self.input_paths:
-            messagebox.showwarning("ファイル未指定", "反映するファイルまたはZIPを指定してください。", parent=self)
-            return
         summary, description = self.get_summary_description()
         if not summary:
             messagebox.showwarning("Summary未入力", "Summaryを入力してください。", parent=self)
@@ -1823,9 +1820,12 @@ class FixApplyDialog(tk.Toplevel):
                 return
             normal_files = checked
             file_count = len(normal_files)
-        else:
-            messagebox.showwarning("ファイル未指定", "反映するファイルまたはZIPを指定してください。", parent=self)
+        elif self.input_paths:
+            messagebox.showwarning("ファイル選択", "反映対象を確認できません。ファイルまたはZIPを選択し直してください。", parent=self)
             return
+        else:
+            self.input_kind = "none"
+
         try:
             code, status = self.run_git_capture([git_path, "status", "--porcelain"], dev_dir)
         except Exception as exc:
@@ -1834,7 +1834,7 @@ class FixApplyDialog(tk.Toplevel):
         if code != 0:
             messagebox.showerror("Gitエラー", f"git status に失敗しました。\n\n{status}", parent=self)
             return
-        if status.strip():
+        if self.input_kind in ("zip", "files") and status.strip():
             if not messagebox.askyesno(
                 "未コミット変更あり",
                 "開発環境に未コミットの変更があります。\n"
@@ -1853,10 +1853,13 @@ class FixApplyDialog(tk.Toplevel):
                 self.append_log(f"ZIPルートを除外: {strip_root}\n")
             else:
                 self.append_log("ZIPをそのまま反映します。\n")
-        else:
+            self.append_log("※指定されていない既存ファイルは削除しません。\n\n")
+        elif self.input_kind == "files":
             self.append_log(f"通常ファイル数: {file_count}\n")
             self.append_log("通常ファイルは開発環境リポジトリ直下へ反映します。\n")
-        self.append_log("※指定されていない既存ファイルは削除しません。\n\n")
+            self.append_log("※指定されていない既存ファイルは削除しません。\n\n")
+        else:
+            self.append_log("ファイル/ZIP未指定: 開発環境の既存変更をCommit & Pushします。\n\n")
         input_kind = self.input_kind
         zip_path = self.input_paths[0] if self.input_kind == "zip" else None
         files_to_copy = list(normal_files)
@@ -1893,8 +1896,10 @@ class FixApplyDialog(tk.Toplevel):
                 shutil.copy2(src, dest)
                 copied_count += 1
             self.after(0, self.append_log, f"コピー: {copied_count} ファイル\n")
+        elif input_kind == "none":
+            self.after(0, self.append_log, "ファイル反映なしで既存変更を確認します。\n")
         else:
-            raise RuntimeError("反映対象が指定されていません。")
+            raise RuntimeError("反映対象を確認できません。")
         code, status = self.run_git_capture([git_path, "status", "--porcelain"], dev_dir)
         self.after(0, self.append_log, "git status 実行...\n")
         if code != 0:
