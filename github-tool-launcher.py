@@ -1,5 +1,5 @@
 # GitHub Tool Launcher
-# APP_VERSION: v1.11.6
+# APP_VERSION: v1.11.7
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ except Exception:
     TkinterDnD = None
 
 APP_NAME = "GitHub Tool Launcher"
-APP_VERSION = "v1.11.6"
+APP_VERSION = "v1.11.7"
 
 RUN_METHODS = [
     ("auto", "自動"),
@@ -1998,6 +1998,10 @@ class GitHubToolLauncher:
         self.filtered_indices: list[int] = []
         self.process_running = False
         self.repo_state_cache: dict[str, str] = {}
+        self.tree_item_value_cache: dict[str, tuple[Any, ...]] = {}
+        self.tree_item_tag_cache: dict[str, tuple[str, ...]] = {}
+        self.iid_to_index: dict[str, int] = {}
+        self.index_to_iid: dict[int, str] = {}
         self.refresh_tree_after_id: str | None = None
         self.refresh_tree_select_index: int | None = None
         self.tree_refreshing = False
@@ -2318,14 +2322,55 @@ class GitHubToolLauncher:
         self.refresh_tree_select_index = None
         self.refresh_tree(select_index=select_index)
 
+    def tree_iid_for_tool(self, tool: dict[str, str]) -> str:
+        return f"tool_{id(tool)}"
+
+    def build_tree_item_values_and_tags(self, tool: dict[str, str]) -> tuple[tuple[Any, ...], tuple[str, ...]]:
+        label_id = normalize_label_id(tool.get("label", ""))
+        if label_id:
+            tags = (f"label_{label_id}",)
+        elif tool.get("last_update_status", "") == "failed":
+            tags = ("state_failed",)
+        else:
+            tags = ()
+        values = (
+            tool["title"],
+            tool["repository"],
+            tool.get("category", ""),
+            self.get_tool_state_label(tool),
+            shorten_datetime(tool.get("last_run_at", "")),
+            shorten_datetime(tool.get("last_update_at", "")),
+        )
+        return values, tags
+
     def refresh_tree(self, select_index: int | None = None) -> None:
         old_selection_index = select_index if select_index is not None else self.get_selected_tool_index()
         query = self.search_var.get().strip().lower() if hasattr(self, "search_var") else ""
         category_filter = self.category_filter_var.get() if hasattr(self, "category_filter_var") else "すべて"
         self.tree_refreshing = True
         try:
-            self.tree.delete(*self.tree.get_children())
+            self.iid_to_index = {}
+            self.index_to_iid = {}
+            current_iids: set[str] = set()
+            for index, tool in enumerate(self.tools):
+                iid = self.tree_iid_for_tool(tool)
+                current_iids.add(iid)
+                self.iid_to_index[iid] = index
+                self.index_to_iid[index] = iid
+
+            # Remove items whose tool was deleted. Existing visible rows are otherwise reused.
+            for iid in list(self.tree_item_value_cache.keys()):
+                if iid not in current_iids:
+                    try:
+                        if self.tree.exists(iid):
+                            self.tree.delete(iid)
+                    except tk.TclError:
+                        pass
+                    self.tree_item_value_cache.pop(iid, None)
+                    self.tree_item_tag_cache.pop(iid, None)
+
             self.filtered_indices = []
+            visible_iids: list[str] = []
             for index, tool in enumerate(self.tools):
                 if category_filter != "すべて" and tool.get("category", "") != category_filter:
                     continue
@@ -2341,35 +2386,50 @@ class GitHubToolLauncher:
                 ).lower()
                 if query and query not in haystack:
                     continue
-                item_id = str(index)
                 self.filtered_indices.append(index)
-                label_id = normalize_label_id(tool.get("label", ""))
-                if label_id:
-                    tags = (f"label_{label_id}",)
-                elif tool.get("last_update_status", "") == "failed":
-                    tags = ("state_failed",)
+                visible_iids.append(self.index_to_iid[index])
+
+            visible_set = set(visible_iids)
+            for iid in list(self.tree.get_children("")):
+                if iid not in visible_set:
+                    try:
+                        self.tree.detach(iid)
+                    except tk.TclError:
+                        pass
+
+            for display_pos, index in enumerate(self.filtered_indices):
+                tool = self.tools[index]
+                iid = self.index_to_iid[index]
+                values, tags = self.build_tree_item_values_and_tags(tool)
+                if not self.tree.exists(iid):
+                    self.tree.insert("", display_pos, iid=iid, values=values, tags=tags)
+                    self.tree_item_value_cache[iid] = values
+                    self.tree_item_tag_cache[iid] = tags
                 else:
-                    tags = ()
-                self.tree.insert(
-                    "",
-                    "end",
-                    iid=item_id,
-                    values=(
-                        tool["title"],
-                        tool["repository"],
-                        tool.get("category", ""),
-                        self.get_tool_state_label(tool),
-                        shorten_datetime(tool.get("last_run_at", "")),
-                        shorten_datetime(tool.get("last_update_at", "")),
-                    ),
-                    tags=tags,
-                )
-            if old_selection_index is not None and str(old_selection_index) in self.tree.get_children():
-                self.tree.selection_set(str(old_selection_index))
-                self.tree.see(str(old_selection_index))
+                    try:
+                        self.tree.move(iid, "", display_pos)
+                    except tk.TclError:
+                        pass
+                    if self.tree_item_value_cache.get(iid) != values:
+                        self.tree.item(iid, values=values)
+                        self.tree_item_value_cache[iid] = values
+                    if self.tree_item_tag_cache.get(iid) != tags:
+                        self.tree.item(iid, tags=tags)
+                        self.tree_item_tag_cache[iid] = tags
+
+            if old_selection_index is not None:
+                old_iid = self.index_to_iid.get(old_selection_index)
+                if old_iid and old_iid in visible_set and self.tree.exists(old_iid):
+                    self.tree.selection_set(old_iid)
+                    self.tree.see(old_iid)
+                elif self.filtered_indices:
+                    first = self.index_to_iid.get(self.filtered_indices[0])
+                    if first and self.tree.exists(first):
+                        self.tree.selection_set(first)
             elif self.filtered_indices:
-                first = str(self.filtered_indices[0])
-                self.tree.selection_set(first)
+                first = self.index_to_iid.get(self.filtered_indices[0])
+                if first and self.tree.exists(first):
+                    self.tree.selection_set(first)
         finally:
             self.tree_refreshing = False
         self.update_selection_status()
@@ -2415,9 +2475,8 @@ class GitHubToolLauncher:
             return None
         row_id = self.tree.identify_row(y)
         if row_id:
-            try:
-                row_index = int(row_id)
-            except ValueError:
+            row_index = self.iid_to_index.get(row_id)
+            if row_index is None:
                 return None
             bbox = self.tree.bbox(row_id)
             if not bbox:
@@ -2431,9 +2490,11 @@ class GitHubToolLauncher:
         last_bbox = self.tree.bbox(visible[-1])
         if not first_bbox or not last_bbox:
             return None
+        first_index = self.iid_to_index.get(visible[0], 0)
+        last_index = self.iid_to_index.get(visible[-1], len(self.tools) - 1)
         if y < first_bbox[1]:
-            return int(visible[0]), first_bbox[1]
-        return int(visible[-1]) + 1, last_bbox[1] + last_bbox[3]
+            return first_index, first_bbox[1]
+        return last_index + 1, last_bbox[1] + last_bbox[3]
 
     def show_drag_indicator(self, y: int) -> None:
         pos = self.get_drag_insert_position(y)
@@ -2459,14 +2520,15 @@ class GitHubToolLauncher:
         if not self.is_unfiltered_view():
             self.set_status("絞り込み中は並び替えできません。")
             return
-        try:
-            self.drag_source_index = int(row_id)
-            self.dragging_tree_item = True
-            self.tree.selection_set(row_id)
-            self.tree.focus(row_id)
-        except ValueError:
+        source_index = self.iid_to_index.get(row_id)
+        if source_index is None:
             self.drag_source_index = None
             self.dragging_tree_item = False
+            return
+        self.drag_source_index = source_index
+        self.dragging_tree_item = True
+        self.tree.selection_set(row_id)
+        self.tree.focus(row_id)
 
     def on_tree_drag_motion(self, event: tk.Event) -> str | None:
         if self.dragging_tree_item:
@@ -2545,10 +2607,7 @@ class GitHubToolLauncher:
         selection = self.tree.selection()
         if not selection:
             return None
-        try:
-            return int(selection[0])
-        except ValueError:
-            return None
+        return self.iid_to_index.get(selection[0])
 
     def get_selected_tool(self) -> dict[str, str] | None:
         index = self.get_selected_tool_index()
@@ -2652,10 +2711,7 @@ class GitHubToolLauncher:
         label_id = "" if digit == "0" else digit
         self.tools[index]["label"] = label_id
         self.save_tools()
-        self.refresh_tree()
-        if str(index) in self.tree.get_children():
-            self.tree.selection_set(str(index))
-            self.tree.see(str(index))
+        self.refresh_tree(select_index=index)
         tool = self.tools[index]
         if label_id:
             self.set_status(f"ラベル {label_id} を設定しました: {tool['title']}")
