@@ -1,5 +1,5 @@
 # GitHub Tool Launcher
-# APP_VERSION: v1.11.5
+# APP_VERSION: v1.11.6
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ except Exception:
     TkinterDnD = None
 
 APP_NAME = "GitHub Tool Launcher"
-APP_VERSION = "v1.11.5"
+APP_VERSION = "v1.11.6"
 
 RUN_METHODS = [
     ("auto", "自動"),
@@ -1216,6 +1216,7 @@ class ToolEditDialog(tk.Toplevel):
             selected_index = self.index
             status_message = "ツール設定を保存しました。"
         self.app.save_tools()
+        self.app.refresh_tool_state_cache(tool)
         self.app.refresh_category_filter()
         self.app.refresh_tree(select_index=selected_index)
         self.app.set_status(status_message)
@@ -1475,6 +1476,7 @@ class RepositoryImportDialog(tk.Toplevel):
                 if added_tools:
                     self.app.tools.extend(added_tools)
                     self.app.save_tools()
+                    self.app.refresh_all_tool_state_cache()
                     self.app.refresh_category_filter()
                     self.app.refresh_tree()
                     self.app.set_status(f"GitHub候補から {len(added_tools)} 件登録しました。")
@@ -1995,6 +1997,10 @@ class GitHubToolLauncher:
 
         self.filtered_indices: list[int] = []
         self.process_running = False
+        self.repo_state_cache: dict[str, str] = {}
+        self.refresh_tree_after_id: str | None = None
+        self.refresh_tree_select_index: int | None = None
+        self.tree_refreshing = False
 
         try:
             self.root = TkinterDnD.Tk() if TkinterDnD is not None else tk.Tk()
@@ -2011,6 +2017,7 @@ class GitHubToolLauncher:
         self._build_main_ui()
         self.restore_or_center_geometry()
         self.refresh_category_filter()
+        self.refresh_all_tool_state_cache()
         self.refresh_tree()
         self.set_status("準備完了。")
         if JSON_LOAD_WARNINGS:
@@ -2145,7 +2152,7 @@ class GitHubToolLauncher:
 
         ttk.Label(filter_frame, text="検索").grid(row=0, column=0, sticky="w", padx=(0, 6))
         self.search_var = tk.StringVar()
-        self.search_var.trace_add("write", lambda *_args: self.refresh_tree())
+        self.search_var.trace_add("write", lambda *_args: self.schedule_refresh_tree())
         self.search_entry = ttk.Entry(filter_frame, textvariable=self.search_var)
         self.search_entry.grid(row=0, column=1, sticky="ew")
         ttk.Button(filter_frame, text="×", width=3, command=self.clear_search).grid(row=0, column=2, sticky="e", padx=(6, 12))
@@ -2154,7 +2161,7 @@ class GitHubToolLauncher:
         self.category_filter_var = tk.StringVar(value="すべて")
         self.category_combo = ttk.Combobox(filter_frame, textvariable=self.category_filter_var, values=["すべて"], state="readonly", width=18)
         self.category_combo.grid(row=0, column=4, sticky="e")
-        self.category_combo.bind("<<ComboboxSelected>>", lambda _e: self.refresh_tree())
+        self.category_combo.bind("<<ComboboxSelected>>", lambda _e: self.schedule_refresh_tree())
 
         list_frame = ttk.Frame(self.root, padding=(12, 0, 12, 6))
         list_frame.grid(row=1, column=0, sticky="nsew")
@@ -2260,7 +2267,10 @@ class GitHubToolLauncher:
         if current not in values:
             self.category_filter_var.set("すべて")
 
-    def get_tool_state_label(self, tool: dict[str, str]) -> str:
+    def tool_state_cache_key(self, tool: dict[str, str]) -> str:
+        return str(tool.get("repository", "")).strip().lower()
+
+    def calculate_tool_state_label(self, tool: dict[str, str]) -> str:
         if validate_repository_name_value(tool.get("repository", "")):
             return "設定エラー"
         repo_dir = self.repository_path_for(tool)
@@ -2273,59 +2283,100 @@ class GitHubToolLauncher:
             return "要確認"
         return "未取得"
 
+    def refresh_tool_state_cache(self, tool: dict[str, str]) -> str:
+        state = self.calculate_tool_state_label(tool)
+        key = self.tool_state_cache_key(tool)
+        if key:
+            self.repo_state_cache[key] = state
+        return state
+
+    def refresh_all_tool_state_cache(self) -> None:
+        self.repo_state_cache.clear()
+        for tool in self.tools:
+            self.refresh_tool_state_cache(tool)
+
+    def get_tool_state_label(self, tool: dict[str, str]) -> str:
+        key = self.tool_state_cache_key(tool)
+        if key and key in self.repo_state_cache:
+            return self.repo_state_cache[key]
+        return self.refresh_tool_state_cache(tool)
+
+    def schedule_refresh_tree(self, select_index: int | None = None, delay: int = 120) -> None:
+        if select_index is not None:
+            self.refresh_tree_select_index = select_index
+        if self.refresh_tree_after_id is not None:
+            try:
+                self.root.after_cancel(self.refresh_tree_after_id)
+            except Exception:
+                pass
+            self.refresh_tree_after_id = None
+        self.refresh_tree_after_id = self.root.after(delay, self.run_scheduled_refresh_tree)
+
+    def run_scheduled_refresh_tree(self) -> None:
+        self.refresh_tree_after_id = None
+        select_index = self.refresh_tree_select_index
+        self.refresh_tree_select_index = None
+        self.refresh_tree(select_index=select_index)
+
     def refresh_tree(self, select_index: int | None = None) -> None:
         old_selection_index = select_index if select_index is not None else self.get_selected_tool_index()
         query = self.search_var.get().strip().lower() if hasattr(self, "search_var") else ""
         category_filter = self.category_filter_var.get() if hasattr(self, "category_filter_var") else "すべて"
-        self.tree.delete(*self.tree.get_children())
-        self.filtered_indices = []
-        for index, tool in enumerate(self.tools):
-            if category_filter != "すべて" and tool.get("category", "") != category_filter:
-                continue
-            haystack = " ".join(
-                [
-                    tool.get("title", ""),
-                    tool.get("repository", ""),
-                    tool.get("script", ""),
-                    tool.get("category", ""),
-                    tool.get("tags", ""),
-                    tool.get("run_method", ""),
-                ]
-            ).lower()
-            if query and query not in haystack:
-                continue
-            item_id = str(index)
-            self.filtered_indices.append(index)
-            label_id = normalize_label_id(tool.get("label", ""))
-            if label_id:
-                tags = (f"label_{label_id}",)
-            elif tool.get("last_update_status", "") == "failed":
-                tags = ("state_failed",)
-            else:
-                tags = ()
-            self.tree.insert(
-                "",
-                "end",
-                iid=item_id,
-                values=(
-                    tool["title"],
-                    tool["repository"],
-                    tool.get("category", ""),
-                    self.get_tool_state_label(tool),
-                    shorten_datetime(tool.get("last_run_at", "")),
-                    shorten_datetime(tool.get("last_update_at", "")),
-                ),
-                tags=tags,
-            )
-        if old_selection_index is not None and str(old_selection_index) in self.tree.get_children():
-            self.tree.selection_set(str(old_selection_index))
-            self.tree.see(str(old_selection_index))
-        elif self.filtered_indices:
-            first = str(self.filtered_indices[0])
-            self.tree.selection_set(first)
+        self.tree_refreshing = True
+        try:
+            self.tree.delete(*self.tree.get_children())
+            self.filtered_indices = []
+            for index, tool in enumerate(self.tools):
+                if category_filter != "すべて" and tool.get("category", "") != category_filter:
+                    continue
+                haystack = " ".join(
+                    [
+                        tool.get("title", ""),
+                        tool.get("repository", ""),
+                        tool.get("script", ""),
+                        tool.get("category", ""),
+                        tool.get("tags", ""),
+                        tool.get("run_method", ""),
+                    ]
+                ).lower()
+                if query and query not in haystack:
+                    continue
+                item_id = str(index)
+                self.filtered_indices.append(index)
+                label_id = normalize_label_id(tool.get("label", ""))
+                if label_id:
+                    tags = (f"label_{label_id}",)
+                elif tool.get("last_update_status", "") == "failed":
+                    tags = ("state_failed",)
+                else:
+                    tags = ()
+                self.tree.insert(
+                    "",
+                    "end",
+                    iid=item_id,
+                    values=(
+                        tool["title"],
+                        tool["repository"],
+                        tool.get("category", ""),
+                        self.get_tool_state_label(tool),
+                        shorten_datetime(tool.get("last_run_at", "")),
+                        shorten_datetime(tool.get("last_update_at", "")),
+                    ),
+                    tags=tags,
+                )
+            if old_selection_index is not None and str(old_selection_index) in self.tree.get_children():
+                self.tree.selection_set(str(old_selection_index))
+                self.tree.see(str(old_selection_index))
+            elif self.filtered_indices:
+                first = str(self.filtered_indices[0])
+                self.tree.selection_set(first)
+        finally:
+            self.tree_refreshing = False
         self.update_selection_status()
 
     def update_selection_status(self) -> None:
+        if getattr(self, "tree_refreshing", False):
+            return
         index = self.get_selected_tool_index()
         if index is None or not (0 <= index < len(self.tools)):
             self.set_status("ツールが選択されていません。")
@@ -2482,6 +2533,7 @@ class GitHubToolLauncher:
             return
         del self.tools[index]
         self.save_tools()
+        self.refresh_all_tool_state_cache()
         self.refresh_category_filter()
         next_index = min(index, len(self.tools) - 1) if self.tools else None
         self.refresh_tree(select_index=next_index)
@@ -2995,6 +3047,7 @@ class GitHubToolLauncher:
             def finish() -> None:
                 self.process_running = False
                 self.save_tools()
+                self.refresh_all_tool_state_cache()
                 self.refresh_tree()
                 dialog.append(f"完了: 成功 {success_count} / 失敗 {fail_count}\n")
                 self.set_status(f"取得処理完了: 成功 {success_count} / 失敗 {fail_count}")
@@ -3005,6 +3058,12 @@ class GitHubToolLauncher:
         threading.Thread(target=worker, daemon=True).start()
 
     def on_close(self) -> None:
+        if getattr(self, "refresh_tree_after_id", None) is not None:
+            try:
+                self.root.after_cancel(self.refresh_tree_after_id)
+            except Exception:
+                pass
+            self.refresh_tree_after_id = None
         self.config["window_geometry"] = self.root.geometry()
         self.save_config()
         self.root.destroy()
